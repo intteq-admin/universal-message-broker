@@ -11,7 +11,7 @@
 	</parent>
 	<groupId>com.intteq</groupId>
 	<artifactId>universal-message-broker</artifactId>
-	<version>1.0.0-SNAPSHOT</version>
+	<version>1.0.0</version>
 	<name>universal-message-broker</name>
 	<description>Messaging starter for RabbitMQ and Azure Service Bus</description>
 

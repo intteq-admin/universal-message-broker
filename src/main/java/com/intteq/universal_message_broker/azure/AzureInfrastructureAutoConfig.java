@@ -25,11 +25,13 @@ public class AzureInfrastructureAutoConfig {
         this.props = props;
     }
 
+    // Sender factory
     @Bean
     public ServiceBusClientBuilder azureSenderFactory() {
         return new ServiceBusClientBuilder().connectionString(resolveConnection());
     }
 
+    // Admin client
     @Bean
     public ServiceBusAdministrationClient adminClient() {
         return new ServiceBusAdministrationClientBuilder()
@@ -48,34 +50,58 @@ public class AzureInfrastructureAutoConfig {
         return conn;
     }
 
+    // THIS RUNS AFTER SPRING STARTS (safe)
     @Bean
     public ApplicationListener<ApplicationReadyEvent> azureInfraInitializer(
-            ServiceBusAdministrationClient adminClient
+            ServiceBusAdministrationClient admin
     ) {
         return event -> {
-
             log.info("Initializing Azure Service Bus infrastructure…");
 
-            // 1. Create topics
+            // 1. Create topics if missing
             props.getTopics().forEach((logical, physical) -> {
-                if (!adminClient.getTopicExists(physical)) {
+                if (!topicExists(admin, physical)) {
                     log.info("Creating Azure topic: {}", physical);
-                    adminClient.createTopic(physical);
+                    admin.createTopic(physical);
+                } else {
+                    log.info("Topic already exists: {}", physical);
                 }
             });
 
-            // 2. Create subscriptions
+            // 2. Create subscriptions if missing
             props.getAzure().getSubscriptions().values().forEach(sub -> {
                 String physicalTopic = props.getTopics().get(sub.getTopic());
                 if (physicalTopic == null) return;
 
-                if (!adminClient.getSubscriptionExists(physicalTopic, sub.getName())) {
+                if (!subscriptionExists(admin, physicalTopic, sub.getName())) {
                     log.info("Creating subscription: {} → {}", sub.getName(), physicalTopic);
-                    adminClient.createSubscription(physicalTopic, sub.getName());
+                    admin.createSubscription(physicalTopic, sub.getName());
+                } else {
+                    log.info("Subscription already exists: {}", sub.getName());
                 }
             });
 
             log.info("Azure Service Bus infrastructure ready!");
         };
+    }
+
+    // ========== Helper methods ==========
+
+    private boolean topicExists(ServiceBusAdministrationClient admin, String topic) {
+        try {
+            admin.getTopic(topic);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private boolean subscriptionExists(ServiceBusAdministrationClient admin, String topic, String sub) {
+        try {
+            admin.getSubscription(topic, sub);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 }
