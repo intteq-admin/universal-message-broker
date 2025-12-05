@@ -11,16 +11,24 @@
 	</parent>
 	<groupId>com.intteq</groupId>
 	<artifactId>universal-message-broker</artifactId>
-	<version>0.0.1-SNAPSHOT</version>
+	<version>1.0.0-SNAPSHOT</version>
 	<name>universal-message-broker</name>
 	<description>Messaging starter for RabbitMQ and Azure Service Bus</description>
+
 	<packaging>jar</packaging>
 	<url/>
 	<licenses>
 		<license/>
 	</licenses>
 	<developers>
-		<developer/>
+		<developer>
+			<id>dilhan-pathum</id>
+			<name>Dilhan Pathum</name>
+			<email>dilhan.jayasiri@gmail.com</email>
+			<url>https://github.com/dilhanpathum</url>
+			<organization>INTTEQ</organization>
+			<organizationUrl>http://intteq.com</organizationUrl>
+		</developer>
 	</developers>
 	<scm>
 		<connection/>
