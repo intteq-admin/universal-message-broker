@@ -1,0 +1,5 @@
+com.intteq.universal_message_broker.MessagingAutoConfiguration
+com.intteq.universal_message_broker.rabbitmq.RabbitMQConfig
+com.intteq.universal_message_broker.rabbitmq.RabbitMQInfrastructureAutoConfig
+com.intteq.universal_message_broker.azure.AzureInfrastructureAutoConfig
+com.intteq.universal_message_broker.internal.ManualAckListenerProcessor
