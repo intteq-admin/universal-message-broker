@@ -70,17 +70,23 @@ public class AzureInfrastructureAutoConfig {
 
             props.getAzure().getSubscriptions().values().forEach(sub -> {
                 String physicalTopic = props.getTopics().get(sub.getTopic());
-                if (physicalTopic == null) return;
 
-                if (!subscriptionExists(admin, physicalTopic, sub.getName())) {
-                    log.info("Creating subscription: {} → {}", sub.getName(), physicalTopic);
-                    retryWithBackoff(
-                            () -> admin.createSubscription(physicalTopic, sub.getName()),
-                            "CreateSubscription:" + sub.getName()
-                    );
-                } else {
-                    log.info("Subscription already exists: {}", sub.getName());
+                if (physicalTopic == null) {
+                    log.warn("No physical topic mapping found for subscription '{}' on logical topic '{}' — skipping",
+                            sub.getName(), sub.getTopic());
+                    return;
                 }
+
+                retryWithBackoff(() -> {
+
+                    if (!subscriptionExists(admin, physicalTopic, sub.getName())) {
+                        log.info("Creating subscription: {} → {}", sub.getName(), physicalTopic);
+                        admin.createSubscription(physicalTopic, sub.getName());
+                    } else {
+                        log.info("Subscription already exists: {}", sub.getName());
+                    }
+
+                }, "EnsureSubscription:" + sub.getName());
             });
 
             log.info("Azure Service Bus infrastructure ready!");

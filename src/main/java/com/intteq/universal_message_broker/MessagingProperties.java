@@ -24,14 +24,14 @@ public class MessagingProperties {
     public Azure getAzure() { return azure; }
 
     public static class RabbitMQ {
-        private Map<String, QueueConfig> queues = Map.of();
+        private Map<String, QueueConfig> queues = new HashMap<>();
 
         public Map<String, QueueConfig> getQueues() { return queues; }
         public void setQueues(Map<String, QueueConfig> queues) { this.queues = queues; }
     }
 
     public static class Azure {
-        private Map<String, SubscriptionConfig> subscriptions = Map.of();
+        private Map<String, SubscriptionConfig> subscriptions = new HashMap<>();
         public Map<String, SubscriptionConfig> getSubscriptions() { return subscriptions; }
         public void setSubscriptions(Map<String, SubscriptionConfig> subscriptions) { this.subscriptions = subscriptions; }
     }
