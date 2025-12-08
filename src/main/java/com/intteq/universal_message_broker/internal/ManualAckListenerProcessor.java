@@ -16,9 +16,11 @@ import org.springframework.amqp.core.*;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer;
 import org.springframework.amqp.rabbit.listener.api.ChannelAwareMessageListener;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.core.annotation.AnnotationUtils;
 import org.springframework.stereotype.Component;
 
 import java.util.concurrent.ConcurrentHashMap;
@@ -26,7 +28,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 @RequiredArgsConstructor
 @Slf4j
-public class ManualAckListenerProcessor implements SmartInitializingSingleton {
+public class ManualAckListenerProcessor implements SmartInitializingSingleton, DisposableBean {
 
     private final MessagingProperties props;
     private final ApplicationContext ctx;
@@ -42,10 +44,43 @@ public class ManualAckListenerProcessor implements SmartInitializingSingleton {
     }
 
     @Override
+    public void destroy() {
+        log.info("Shutting down message listeners...");
+
+        // Stop Azure processors
+        azureProcessors.values().forEach(processor -> {
+            try {
+                log.info("Stopping Azure processor: {}", processor.getSubscriptionName());
+                processor.stop();
+                processor.close();
+            } catch (Exception e) {
+                log.warn("Error closing Azure processor", e);
+            }
+        });
+
+        // Stop RabbitMQ containers
+        rabbitContainers.values().forEach(container -> {
+            try {
+                log.info("Stopping Rabbit listener: {}", String.join(",", container.getQueueNames()));
+                container.stop();
+            } catch (Exception e) {
+                log.warn("Error stopping Rabbit container", e);
+            }
+        });
+
+        log.info("Message listeners stopped successfully.");
+    }
+
+    @Override
     public void afterSingletonsInstantiated() {
         ctx.getBeansWithAnnotation(MessagingListener.class).values().forEach(bean -> {
             Class<?> clazz = bean.getClass();
-            MessagingListener ann = clazz.getAnnotation(MessagingListener.class);
+
+            MessagingListener ann = AnnotationUtils.findAnnotation(clazz, MessagingListener.class);
+            if (ann == null) {
+                log.warn("MessagingListener annotation not found on bean {}. Skipping...", clazz.getName());
+                return;
+            }
             String logicalTopic = ann.topic();
             String physicalTopic = props.getTopics().getOrDefault(logicalTopic, logicalTopic);
             String channelName = ann.channel();
@@ -78,12 +113,9 @@ public class ManualAckListenerProcessor implements SmartInitializingSingleton {
             java.lang.reflect.Method method
     ) {
         String queueName = channelName + ".queue";
-        String declarableBeanName = queueName + "_declarations";
         String containerBeanName = "rabbitContainer_" + queueName;
 
-        // ============================
-        // 1. DECLARE QUEUE & BINDING
-        // ============================
+        // ========== 1. DECLARE QUEUE, EXCHANGE & BINDING ==========
         AmqpAdmin admin = ctx.getBean(AmqpAdmin.class);
 
         try {
@@ -91,7 +123,7 @@ public class ManualAckListenerProcessor implements SmartInitializingSingleton {
             TopicExchange ex = new TopicExchange(exchange, true, false);
             Binding binding = BindingBuilder.bind(queue).to(ex).with(routingKey);
 
-            admin.declareQueue(queue);        // Creates immediately (no race condition)
+            admin.declareQueue(queue);
             admin.declareExchange(ex);
             admin.declareBinding(binding);
 
@@ -99,24 +131,35 @@ public class ManualAckListenerProcessor implements SmartInitializingSingleton {
                     queueName, exchange, routingKey);
 
         } catch (Exception e) {
-            log.error("Failed to declare RabbitMQ infrastructure for queue={}", queueName, e);
-            return; // Do NOT start container if declarations fail
-        }
-
-        // ============================================================
-        // 2. Avoid duplicate listener containers
-        // ============================================================
-        if (rabbitContainers.containsKey(queueName)) {
-            log.debug("Rabbit listener already active for queue {}", queueName);
+            log.error("Failed to declare RabbitMQ infra for queue={}", queueName, e);
             return;
         }
 
-        // ============================================================
-        // 3. Create the listener container
-        // ============================================================
+        // ========== 2. ATOMIC: CREATE LISTENER ONLY IF ABSENT ==========
+        SimpleMessageListenerContainer container =
+                rabbitContainers.computeIfAbsent(queueName, q -> createRabbitContainer(
+                        q, handler, method
+                ));
+
+        // Prevent duplicate Spring bean registration
+        if (!configurableCtx.getBeanFactory().containsBean(containerBeanName)) {
+            configurableCtx.getBeanFactory().registerSingleton(containerBeanName, container);
+        }
+
+        log.info("RabbitMQ Listener STARTED → queue={}", queueName);
+    }
+
+
+    private SimpleMessageListenerContainer createRabbitContainer(
+            String queueName,
+            Object handler,
+            java.lang.reflect.Method method
+    ) {
         ConnectionFactory connectionFactory = ctx.getBean(ConnectionFactory.class);
 
-        SimpleMessageListenerContainer container = new SimpleMessageListenerContainer(connectionFactory);
+        SimpleMessageListenerContainer container =
+                new SimpleMessageListenerContainer(connectionFactory);
+
         container.setQueueNames(queueName);
         container.setAcknowledgeMode(AcknowledgeMode.MANUAL);
         container.setPrefetchCount(1);
@@ -127,7 +170,10 @@ public class ManualAckListenerProcessor implements SmartInitializingSingleton {
             long tag = message.getMessageProperties().getDeliveryTag();
 
             try {
-                Object payload = mapper.readValue(message.getBody(), method.getParameterTypes()[0]);
+                Object payload = mapper.readValue(
+                        message.getBody(),
+                        method.getParameterTypes()[0]
+                );
                 MessageContext mc = new MessageContext(channel, tag);
                 method.invoke(handler, payload, mc);
 
@@ -140,10 +186,7 @@ public class ManualAckListenerProcessor implements SmartInitializingSingleton {
         container.afterPropertiesSet();
         container.start();
 
-        rabbitContainers.put(queueName, container);
-        configurableCtx.getBeanFactory().registerSingleton(containerBeanName, container);
-
-        log.info("RabbitMQ Listener STARTED → queue={}", queueName);
+        return container;
     }
 
     // ====================== AZURE SERVICE BUS — FINAL ======================
@@ -178,7 +221,11 @@ public class ManualAckListenerProcessor implements SmartInitializingSingleton {
                 .processError(err -> log.error("Azure Service Bus error: {}", err.getException().getMessage()))
                 .buildProcessorClient();
 
-        processor.start();
+        try {
+            processor.start();
+        } catch (Exception e) {
+            log.error("Failed to start Azure processor for subscription {}", subscription, e);
+        }
         azureProcessors.put(subscription, processor);
         log.info("Azure listener STARTED: {} → {}/{}", routingKey, topic, subscription);
     }

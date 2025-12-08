@@ -1,5 +1,6 @@
 package com.intteq.universal_message_broker.azure;
 
+import com.azure.core.exception.ResourceNotFoundException;
 import com.azure.messaging.servicebus.ServiceBusClientBuilder;
 import com.azure.messaging.servicebus.administration.ServiceBusAdministrationClient;
 import com.azure.messaging.servicebus.administration.ServiceBusAdministrationClientBuilder;
@@ -15,7 +16,6 @@ import org.springframework.context.annotation.Configuration;
 @ConditionalOnProperty(name = "messaging.provider", havingValue = "azure")
 @Slf4j
 public class AzureInfrastructureAutoConfig {
-
     private final MessagingProperties props;
 
     @Value("${azure.servicebus.connection-string:}")
@@ -25,13 +25,11 @@ public class AzureInfrastructureAutoConfig {
         this.props = props;
     }
 
-    // Sender factory
     @Bean
     public ServiceBusClientBuilder azureSenderFactory() {
         return new ServiceBusClientBuilder().connectionString(resolveConnection());
     }
 
-    // Admin client
     @Bean
     public ServiceBusAdministrationClient adminClient() {
         return new ServiceBusAdministrationClientBuilder()
@@ -50,32 +48,36 @@ public class AzureInfrastructureAutoConfig {
         return conn;
     }
 
-    // THIS RUNS AFTER SPRING STARTS (safe)
     @Bean
     public ApplicationListener<ApplicationReadyEvent> azureInfraInitializer(
             ServiceBusAdministrationClient admin
     ) {
         return event -> {
-            log.info("Initializing Azure Service Bus infrastructure…");
 
-            // 1. Create topics if missing
+            log.info("Initializing Azure Service Bus infrastructure with retry support…");
+
             props.getTopics().forEach((logical, physical) -> {
                 if (!topicExists(admin, physical)) {
                     log.info("Creating Azure topic: {}", physical);
-                    admin.createTopic(physical);
+                    retryWithBackoff(
+                            () -> admin.createTopic(physical),
+                            "CreateTopic:" + physical
+                    );
                 } else {
                     log.info("Topic already exists: {}", physical);
                 }
             });
 
-            // 2. Create subscriptions if missing
             props.getAzure().getSubscriptions().values().forEach(sub -> {
                 String physicalTopic = props.getTopics().get(sub.getTopic());
                 if (physicalTopic == null) return;
 
                 if (!subscriptionExists(admin, physicalTopic, sub.getName())) {
                     log.info("Creating subscription: {} → {}", sub.getName(), physicalTopic);
-                    admin.createSubscription(physicalTopic, sub.getName());
+                    retryWithBackoff(
+                            () -> admin.createSubscription(physicalTopic, sub.getName()),
+                            "CreateSubscription:" + sub.getName()
+                    );
                 } else {
                     log.info("Subscription already exists: {}", sub.getName());
                 }
@@ -85,14 +87,43 @@ public class AzureInfrastructureAutoConfig {
         };
     }
 
-    // ========== Helper methods ==========
+    private void retryWithBackoff(Runnable action, String label) {
+        int maxAttempts = 6;
+        long delay = 1000;
+
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                action.run();
+                return;
+            } catch (Exception ex) {
+                if (attempt == maxAttempts) {
+                    log.error("Final retry failed for {}: {}", label, ex.getMessage());
+                    throw ex;
+                }
+
+                log.warn("Retry {}/{} for {} failed: {} → retrying in {}ms",
+                        attempt, maxAttempts, label, ex.getMessage(), delay);
+
+                try {
+                    Thread.sleep(delay);
+                } catch (InterruptedException ignored) {}
+
+                delay *= 2;
+            }
+        }
+    }
 
     private boolean topicExists(ServiceBusAdministrationClient admin, String topic) {
         try {
             admin.getTopic(topic);
             return true;
-        } catch (Exception ignored) {
+
+        } catch (ResourceNotFoundException e) {
             return false;
+
+        } catch (Exception e) {
+            log.error("Error checking topic existence: {}", topic, e);
+            throw e;
         }
     }
 
@@ -100,8 +131,13 @@ public class AzureInfrastructureAutoConfig {
         try {
             admin.getSubscription(topic, sub);
             return true;
-        } catch (Exception ignored) {
+
+        } catch (ResourceNotFoundException e) {
             return false;
+
+        } catch (Exception e) {
+            log.error("Error checking subscription existence: {} / {}", topic, sub, e);
+            throw e;
         }
     }
 }

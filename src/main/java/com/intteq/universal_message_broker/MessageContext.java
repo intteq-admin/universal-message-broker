@@ -6,10 +6,8 @@ import com.azure.messaging.servicebus.ServiceBusReceiverClient;
 import com.azure.messaging.servicebus.models.DeadLetterOptions;
 import com.rabbitmq.client.Channel;
 import lombok.Getter;
-import lombok.RequiredArgsConstructor;
 
 @Getter
-@RequiredArgsConstructor
 public class MessageContext {
 
     private final Channel rabbitChannel;
@@ -27,7 +25,7 @@ public class MessageContext {
         this.azureReceiver = null;
     }
 
-    // Azure — Processor mode (RECOMMENDED)
+    // Azure — Processor mode
     public MessageContext(ServiceBusReceivedMessageContext context) {
         this.rabbitChannel = null;
         this.rabbitDeliveryTag = 0;
@@ -36,7 +34,7 @@ public class MessageContext {
         this.azureReceiver = null;
     }
 
-    // Azure — Legacy receiver mode
+    // Azure — Manual receiver mode
     public MessageContext(ServiceBusReceivedMessage message, ServiceBusReceiverClient receiver) {
         this.rabbitChannel = null;
         this.rabbitDeliveryTag = 0;
@@ -52,6 +50,8 @@ public class MessageContext {
             azureProcessorContext.complete();
         } else if (azureReceiver != null && azureMessage != null) {
             azureReceiver.complete(azureMessage);
+        } else {
+            throw new IllegalStateException("No messaging context available to acknowledge");
         }
     }
 

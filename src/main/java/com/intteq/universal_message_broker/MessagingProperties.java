@@ -2,6 +2,7 @@ package com.intteq.universal_message_broker;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.util.HashMap;
 import java.util.Map;
 
 @ConfigurationProperties(prefix = "messaging")
@@ -9,7 +10,7 @@ public class MessagingProperties {
     private String provider = "rabbitmq";
 
     // Logical topics → physical exchange (RabbitMQ) or topic (Azure)
-    private Map<String, String> topics = Map.of();
+    private Map<String, String> topics = new HashMap<>();
 
     private final RabbitMQ rabbitmq = new RabbitMQ();
     private final Azure azure = new Azure();
