@@ -1,5 +1,8 @@
 package com.intteq.universal_message_broker.internal;
-import com.azure.messaging.servicebus.*;
+
+import com.azure.messaging.servicebus.ServiceBusClientBuilder;
+import com.azure.messaging.servicebus.ServiceBusProcessorClient;
+import com.azure.messaging.servicebus.ServiceBusReceivedMessage;
 import com.azure.messaging.servicebus.models.DeadLetterOptions;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.intteq.universal_message_broker.MessageContext;
@@ -17,7 +20,6 @@ import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.stereotype.Component;
-import com.rabbitmq.client.Channel;
 
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -68,60 +70,80 @@ public class ManualAckListenerProcessor implements SmartInitializingSingleton {
     }
 
     // ====================== RABBITMQ — FINAL & BULLETPROOF ======================
-    private void registerRabbitListener(String exchange, String routingKey, String channelName, Object handler, java.lang.reflect.Method method) {
+    private void registerRabbitListener(
+            String exchange,
+            String routingKey,
+            String channelName,
+            Object handler,
+            java.lang.reflect.Method method
+    ) {
         String queueName = channelName + ".queue";
-        String declarableBeanName = queueName + "_decl";
+        String declarableBeanName = queueName + "_declarations";
         String containerBeanName = "rabbitContainer_" + queueName;
 
-        // 1. Declare queue + exchange + binding (idempotent)
-        if (!configurableCtx.getBeanFactory().containsBean(declarableBeanName)) {
-            Declarables declarables = new Declarables(
-                    new Queue(queueName, true, false, false), // durable, not exclusive, not auto-delete
-                    new TopicExchange(exchange, true, false),
-                    BindingBuilder.bind(new Queue(queueName))
-                            .to(new TopicExchange(exchange))
-                            .with(routingKey)
-            );
-            configurableCtx.getBeanFactory().registerSingleton(declarableBeanName, declarables);
-            log.info("Declared RabbitMQ: {} → {} (exchange: {})", routingKey, queueName, exchange);
+        // ============================
+        // 1. DECLARE QUEUE & BINDING
+        // ============================
+        AmqpAdmin admin = ctx.getBean(AmqpAdmin.class);
+
+        try {
+            Queue queue = QueueBuilder.durable(queueName).build();
+            TopicExchange ex = new TopicExchange(exchange, true, false);
+            Binding binding = BindingBuilder.bind(queue).to(ex).with(routingKey);
+
+            admin.declareQueue(queue);        // Creates immediately (no race condition)
+            admin.declareExchange(ex);
+            admin.declareBinding(binding);
+
+            log.info("RabbitMQ OK → queue={}, exchange={}, routingKey={}",
+                    queueName, exchange, routingKey);
+
+        } catch (Exception e) {
+            log.error("Failed to declare RabbitMQ infrastructure for queue={}", queueName, e);
+            return; // Do NOT start container if declarations fail
         }
 
-        // 2. Register listener container only once
+        // ============================================================
+        // 2. Avoid duplicate listener containers
+        // ============================================================
         if (rabbitContainers.containsKey(queueName)) {
-            log.debug("RabbitMQ listener already active: {}", queueName);
+            log.debug("Rabbit listener already active for queue {}", queueName);
             return;
         }
 
+        // ============================================================
+        // 3. Create the listener container
+        // ============================================================
         ConnectionFactory connectionFactory = ctx.getBean(ConnectionFactory.class);
+
         SimpleMessageListenerContainer container = new SimpleMessageListenerContainer(connectionFactory);
         container.setQueueNames(queueName);
         container.setAcknowledgeMode(AcknowledgeMode.MANUAL);
         container.setPrefetchCount(1);
-        container.setRecoveryInterval(0L); // Prevents restart loop
         container.setMissingQueuesFatal(false);
+        container.setRecoveryInterval(3000);
 
-        container.setMessageListener((ChannelAwareMessageListener) (Message message, Channel channel) -> {
-            long deliveryTag = message.getMessageProperties().getDeliveryTag();
+        container.setMessageListener((ChannelAwareMessageListener) (message, channel) -> {
+            long tag = message.getMessageProperties().getDeliveryTag();
+
             try {
                 Object payload = mapper.readValue(message.getBody(), method.getParameterTypes()[0]);
-                MessageContext context = new MessageContext(channel, deliveryTag);
-                method.invoke(handler, payload, context);
-            } catch (Exception e) {
-                log.error("Handler failed in queue {} → NACK + DLQ", queueName, e);
-                try {
-                    channel.basicNack(deliveryTag, false, false);
-                } catch (Exception ignored) {}
+                MessageContext mc = new MessageContext(channel, tag);
+                method.invoke(handler, payload, mc);
+
+            } catch (Exception ex) {
+                log.error("Listener failed on queue {} → sending to DLQ", queueName, ex);
+                channel.basicNack(tag, false, false);
             }
         });
 
         container.afterPropertiesSet();
         container.start();
 
-        // Save container for lifecycle management
         rabbitContainers.put(queueName, container);
         configurableCtx.getBeanFactory().registerSingleton(containerBeanName, container);
 
-        log.info("RabbitMQ listener STARTED: {} → {}", routingKey, queueName);
+        log.info("RabbitMQ Listener STARTED → queue={}", queueName);
     }
 
     // ====================== AZURE SERVICE BUS — FINAL ======================
