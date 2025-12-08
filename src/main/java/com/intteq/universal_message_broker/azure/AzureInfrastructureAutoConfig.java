@@ -95,6 +95,7 @@ public class AzureInfrastructureAutoConfig {
             try {
                 action.run();
                 return;
+
             } catch (Exception ex) {
                 if (attempt == maxAttempts) {
                     log.error("Final retry failed for {}: {}", label, ex.getMessage());
@@ -106,7 +107,13 @@ public class AzureInfrastructureAutoConfig {
 
                 try {
                     Thread.sleep(delay);
-                } catch (InterruptedException ignored) {}
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(
+                            "Retry interrupted for: " + label,
+                            e
+                    );
+                }
 
                 delay *= 2;
             }
