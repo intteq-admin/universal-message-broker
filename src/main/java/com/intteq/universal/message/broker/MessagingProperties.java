@@ -107,7 +107,7 @@ public class MessagingProperties {
         @NotBlank(message = "queue.routingKey must not be blank")
         private String routingKey;
 
-        /** Whether this queue is a DLQ queue. */
+        /** Whether to create a Dead Letter Queue (DLQ) and Dead Letter Exchange (DLX) for this queue. */
         private boolean dlq = false;
 
         /** TTL in milliseconds (default = 2 days). */

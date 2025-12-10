@@ -113,7 +113,11 @@ public class RabbitMQInfrastructureAutoConfig {
                     .getQueues()
                     .values()
                     .stream()
-                    .anyMatch(cfg -> cfg.getName().equals(autoQueueName));
+                    .anyMatch(cfg -> {
+                        String routingKey = cfg.getRoutingKey();
+                        return routingKey != null &&
+                                routingKey.startsWith(logicalTopic + ".");
+                    });
 
             if (explicitQueueExists) {
                 return;

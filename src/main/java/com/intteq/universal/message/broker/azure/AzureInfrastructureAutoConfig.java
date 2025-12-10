@@ -23,61 +23,71 @@ import java.security.SecureRandom;
 import java.time.Duration;
 
 /**
- * Azure Service Bus infrastructure auto-configuration.
+ * Azure Service Bus provisioning and client configuration.
  *
- * <p>This component is activated only when:
+ * <p>This module:
+ * <ul>
+ *     <li>Automatically creates topics and subscriptions</li>
+ *     <li>Handles Azure authentication (Connection String or Managed Identity)</li>
+ *     <li>Provides ServiceBusClientBuilder and ServiceBusAdministrationClient beans</li>
+ * </ul>
+ *
+ * Activated only when:
  * <pre>
  * messaging.provider = azure
  * </pre>
  *
- * <p>Capabilities:
- * <ul>
- *     <li>Topic creation</li>
- *     <li>Subscription creation</li>
- *     <li>Backoff-based retry logic</li>
- *     <li>Supports both connection strings & Azure Managed Identity</li>
- *     <li>Optional Micrometer metrics for initialization</li>
- * </ul>
+ * Supports Azure Service Bus SDK version: 7.17.x
  */
 @Configuration
-@ConditionalOnProperty(name = "messaging.provider", havingValue = "azure")
 @Slf4j
 @RequiredArgsConstructor
+@ConditionalOnProperty(name = "messaging.provider", havingValue = "azure")
 public class AzureInfrastructureAutoConfig {
 
-    private final MessagingProperties properties;
+    private final MessagingProperties props;
 
-    /** Optional metric registry (library should not force Micrometer) */
+    /** Micrometer metrics – optional */
     @Nullable
     private final MeterRegistry meterRegistry;
 
-    /**
-     * Optional connection string. If not provided, Managed Identity is used as fallback.
-     */
+    /** SAS connection string (optional when using Managed Identity) */
     @Value("${azure.servicebus.connection-string:}")
     private String connectionString;
 
+    /**
+     * Fully-qualified namespace for Managed Identity mode.
+     *
+     * Required ONLY if connection string is empty.
+     * Example:
+     *   my-namespace.servicebus.windows.net
+     */
+    @Value("${azure.servicebus.namespace:}")
+    private String namespace;
+
+    private volatile boolean initialized = false;
+
     private static final int MAX_RETRIES = 6;
-    private static final Duration BASE_DELAY = Duration.ofSeconds(1);
     private static final SecureRandom RNG = new SecureRandom();
+    private static final Duration BASE_DELAY = Duration.ofSeconds(1);
 
-    // ===========================================================
-    // Credential / Connection Resolution
-    // ===========================================================
-
-    private volatile boolean initialized;
+    // =====================================================
+    // 1. CONFIG VALIDATION
+    // =====================================================
 
     @PostConstruct
     void validate() {
-        if (initialized) return;
+        if (initialized) {
+            return;
+        }
         initialized = true;
 
-        log.info("Azure Service Bus provider activated. Validating configuration...");
+        log.info("Azure Service Bus mode enabled. Validating configuration...");
 
         if (connectionString == null || connectionString.isBlank()) {
-            log.warn("No connection string provided → attempting to use Managed Identity (Azure AD).");
+            log.warn("Using Managed Identity: no Azure Service Bus connection string found.");
         } else {
-            log.info("Azure Service Bus using connection string authentication.");
+            log.info("Using SAS authentication for Azure Service Bus.");
         }
     }
 
@@ -89,74 +99,126 @@ public class AzureInfrastructureAutoConfig {
         if (env != null && !env.isBlank()) {
             return env;
         }
-        return null; // indicates fallback to Managed Identity
+        return null;
     }
 
     private boolean useManagedIdentity() {
         return resolveConnectionString() == null;
     }
 
-    // ===========================================================
-    // Bean Definitions
-    // ===========================================================
+    // =====================================================
+    // 2. BEANS
+    // =====================================================
 
+    /**
+     * Shared token credential for Managed Identity authentication.
+     */
     @Bean
-    public ServiceBusClientBuilder serviceBusClientBuilder() {
-        if (useManagedIdentity()) {
-            log.info("Azure Service Bus client using Managed Identity auth.");
-            TokenCredential credential = new DefaultAzureCredentialBuilder().build();
-            return new ServiceBusClientBuilder().credential(credential);
-        }
-        return new ServiceBusClientBuilder().connectionString(resolveConnectionString());
+    public TokenCredential azureCredential() {
+        return new DefaultAzureCredentialBuilder().build();
     }
 
+    /**
+     * Creates ServiceBusClientBuilder for producers and receivers.
+     *
+     * For 7.17.x:
+     * - This builder DOES support fullyQualifiedNamespace()
+     * - Admin builder does NOT
+     */
     @Bean
-    public ServiceBusAdministrationClient adminClient() {
+    public ServiceBusClientBuilder serviceBusClientBuilder(
+            @Nullable TokenCredential credential
+    ) {
         if (useManagedIdentity()) {
-            log.info("Azure Service Bus admin client using Managed Identity auth.");
-            TokenCredential credential = new DefaultAzureCredentialBuilder().build();
+
+            if (namespace == null || namespace.isBlank()) {
+                throw new IllegalStateException(
+                        "azure.servicebus.namespace is required when using Managed Identity."
+                );
+            }
+
+            log.info("Creating ServiceBusClientBuilder using Managed Identity.");
+
+            return new ServiceBusClientBuilder()
+                    .fullyQualifiedNamespace(namespace)
+                    .credential(credential);
+        }
+
+        log.info("Creating ServiceBusClientBuilder using connection string.");
+
+        return new ServiceBusClientBuilder()
+                .connectionString(resolveConnectionString());
+    }
+
+    /**
+     * Creates ServiceBusAdministrationClient for topic/subscription provisioning.
+     *
+     * IMPORTANT:
+     * - Admin builder in 7.17.x DOES NOT support fullyQualifiedNamespace()
+     * - It ONLY supports:
+     *     - connectionString()
+     *     - credential()
+     */
+    @Bean
+    public ServiceBusAdministrationClient adminClient(
+            @Nullable TokenCredential credential
+    ) {
+        if (useManagedIdentity()) {
+
+            if (namespace == null || namespace.isBlank()) {
+                throw new IllegalStateException(
+                        "azure.servicebus.namespace is required for Managed Identity."
+                );
+            }
+
+            log.info("Creating ServiceBusAdministrationClient using Managed Identity.");
+
             return new ServiceBusAdministrationClientBuilder()
                     .credential(credential)
                     .buildClient();
         }
+
+        log.info("Creating ServiceBusAdministrationClient using connection string.");
+
         return new ServiceBusAdministrationClientBuilder()
                 .connectionString(resolveConnectionString())
                 .buildClient();
     }
 
-    // ===========================================================
-    // Infrastructure Initialization
-    // ===========================================================
+    // =====================================================
+    // 3. INFRASTRUCTURE BOOTSTRAP
+    // =====================================================
 
     @Bean
     public ApplicationListener<ApplicationReadyEvent> azureInfrastructureInitializer(
             ServiceBusAdministrationClient admin
     ) {
-        return event -> initializeAzureInfrastructure(admin);
+        return event -> initializeInfrastructure(admin);
     }
 
-    private void initializeAzureInfrastructure(ServiceBusAdministrationClient admin) {
-        log.info("Beginning Azure Service Bus infrastructure initialization…");
+    private void initializeInfrastructure(ServiceBusAdministrationClient admin) {
+        log.info("Initializing Azure Service Bus infrastructure...");
 
         createTopics(admin);
         createSubscriptions(admin);
 
-        log.info("Azure Service Bus infrastructure ready.");
+        log.info("Azure Service Bus infrastructure is ready.");
+
         if (meterRegistry != null) {
             meterRegistry.counter("umb.azure.infra.ready").increment();
         }
     }
 
-    // ===========================================================
-    // Topic & Subscription Creation
-    // ===========================================================
+    // =====================================================
+    // 4. TOPICS + SUBSCRIPTIONS CREATION
+    // =====================================================
 
     private void createTopics(ServiceBusAdministrationClient admin) {
-        properties.getTopics().forEach((logical, physical) -> {
-            log.info("Ensuring topic exists: logical='{}' physical='{}'", logical, physical);
+        props.getTopics().forEach((logical, physical) -> {
+
+            log.info("Checking topic: logical='{}' physical='{}'", logical, physical);
 
             if (topicExists(admin, physical)) {
-                log.info("Topic already exists: {}", physical);
                 return;
             }
 
@@ -165,16 +227,18 @@ public class AzureInfrastructureAutoConfig {
     }
 
     private void createSubscriptions(ServiceBusAdministrationClient admin) {
-        properties.getAzure().getSubscriptions().values().forEach(sub -> {
-            String physicalTopic = properties.getTopics().get(sub.getTopic());
+
+        props.getAzure().getSubscriptions().values().forEach(sub -> {
+
+            String physicalTopic = props.getTopics().get(sub.getTopic());
 
             if (physicalTopic == null) {
-                log.warn("No topic mapping found for subscription '{}' on logical topic '{}' → skipping.",
+                log.warn("Skipping subscription '{}' — logical topic '{}' not mapped.",
                         sub.getName(), sub.getTopic());
                 return;
             }
 
-            log.info("Ensuring subscription exists: {} → {}", sub.getName(), physicalTopic);
+            log.info("Checking subscription: {} → {}", sub.getName(), physicalTopic);
 
             retry("CreateSubscription:" + sub.getName(), () -> {
                 if (!subscriptionExists(admin, physicalTopic, sub.getName())) {
@@ -184,22 +248,25 @@ public class AzureInfrastructureAutoConfig {
         });
     }
 
-    // ===========================================================
-    // Retry with jitter exponential backoff
-    // ===========================================================
+    // =====================================================
+    // 5. RETRY + EXISTENCE CHECKS
+    // =====================================================
 
     private void retry(String label, Runnable action) {
         Duration delay = BASE_DELAY;
 
         for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+
             try {
                 action.run();
+
                 if (meterRegistry != null) {
                     meterRegistry.counter("umb.azure.infra.success", "label", label).increment();
                 }
                 return;
 
             } catch (Exception e) {
+
                 if (attempt == MAX_RETRIES) {
                     log.error("Final retry failed for {}: {}", label, e.getMessage());
                     throw e;
@@ -212,7 +279,6 @@ public class AzureInfrastructureAutoConfig {
                         attempt, MAX_RETRIES, label, e.getMessage(), sleepMs);
 
                 sleep(sleepMs);
-
                 delay = delay.multipliedBy(2);
             }
         }
@@ -223,23 +289,16 @@ public class AzureInfrastructureAutoConfig {
             Thread.sleep(ms);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("Retry interrupted", e);
+            throw new IllegalStateException("Retry sleep interrupted", e);
         }
     }
 
-    // ===========================================================
-    // Existence Checks
-    // ===========================================================
-
-    private boolean topicExists(ServiceBusAdministrationClient admin, String name) {
+    private boolean topicExists(ServiceBusAdministrationClient admin, String topic) {
         try {
-            admin.getTopic(name);
+            admin.getTopic(topic);
             return true;
         } catch (ResourceNotFoundException e) {
             return false;
-        } catch (Exception e) {
-            log.error("Topic existence check failed: {}", name, e);
-            throw e;
         }
     }
 
@@ -247,11 +306,8 @@ public class AzureInfrastructureAutoConfig {
         try {
             admin.getSubscription(topic, sub);
             return true;
-        } catch (ResourceNotFoundException ignored) {
+        } catch (ResourceNotFoundException e) {
             return false;
-        } catch (Exception e) {
-            log.error("Subscription existence check failed: {} / {}", topic, sub, e);
-            throw e;
         }
     }
 }

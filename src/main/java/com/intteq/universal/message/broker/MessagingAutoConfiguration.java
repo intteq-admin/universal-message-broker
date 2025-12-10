@@ -48,8 +48,10 @@ public class MessagingAutoConfiguration {
 
         // If the application does not provide an ObjectMapper, create a default one internally.
         ObjectMapper mapper = objectMapper != null ? objectMapper : new ObjectMapper();
+        // If the application does not provide a MeterRegistry, use a no-op implementation.
+        MeterRegistry registry = meterRegistry != null ? meterRegistry : new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
 
         // MessagingProxyFactory constructor accepts (MessagingProperties, ApplicationContext, MeterRegistry, ObjectMapper)
-        return new MessagingProxyFactory(props, ctx, meterRegistry, mapper);
+        return new MessagingProxyFactory(props, ctx, registry, mapper);
     }
 }
