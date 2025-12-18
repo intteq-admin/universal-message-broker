@@ -4,6 +4,7 @@ import com.azure.messaging.servicebus.ServiceBusClientBuilder;
 import com.azure.messaging.servicebus.ServiceBusMessage;
 import com.azure.messaging.servicebus.ServiceBusSenderClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.intteq.universal.message.broker.MessagePublisherFactory;
 import com.intteq.universal.message.broker.MessagingProperties;
 import com.intteq.universal.message.broker.annotation.MessagingEvent;
 import com.intteq.universal.message.broker.annotation.MessagingTopic;
@@ -36,7 +37,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Slf4j
 @RequiredArgsConstructor
-public class MessagingProxyFactory implements DisposableBean {
+public class MessagingProxyFactory implements MessagePublisherFactory, DisposableBean {
 
     private final MessagingProperties properties;
     private final ApplicationContext ctx;
@@ -54,6 +55,7 @@ public class MessagingProxyFactory implements DisposableBean {
     // ========================================================================
 
     @SuppressWarnings("unchecked")
+    @Override
     public <T> T createPublisher(Class<T> interfaceType) {
 
         validatePublisherInterface(interfaceType);
