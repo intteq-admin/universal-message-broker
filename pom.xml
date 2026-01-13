@@ -11,7 +11,7 @@
 	</parent>
 	<groupId>com.intteq</groupId>
 	<artifactId>universal-message-broker</artifactId>
-	<version>1.0.0</version>
+	<version>1.0.1</version>
 	<name>universal-message-broker</name>
 	<description>A unified messaging starter enabling consistent RabbitMQ and Azure Service Bus integration</description>
 	<url>https://github.com/intteq-admin/universal-message-broker</url>
