@@ -1,7 +1,9 @@
 package com.intteq.universal.message.broker;
 
+import com.intteq.universal.message.broker.azure.AzureProperties;
 import com.intteq.universal.message.broker.internal.MessagingProxyFactory;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.intteq.universal.message.broker.rabbitmq.RabbitMQProperties;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -25,7 +27,7 @@ import org.springframework.lang.Nullable;
  * is optional and will be injected only if present on the classpath / application.
  */
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(MessagingProperties.class)
+@EnableConfigurationProperties({MessagingProperties.class, RabbitMQProperties.class, AzureProperties.class})
 @ConditionalOnProperty(prefix = "universal.message-broker", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class MessagingAutoConfiguration {
 

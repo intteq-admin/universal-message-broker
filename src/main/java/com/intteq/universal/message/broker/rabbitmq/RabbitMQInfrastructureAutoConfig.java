@@ -22,13 +22,17 @@ import java.util.*;
  *
  * <p>This class contains no consumer logic — only pure topology creation.
  */
+
 @Slf4j
 @Configuration
 @ConditionalOnProperty(name = "messaging.provider", havingValue = "rabbitmq", matchIfMissing = true)
 public class RabbitMQInfrastructureAutoConfig {
 
     @Bean
-    public Declarables rabbitDeclarables(MessagingProperties props) {
+    public Declarables rabbitDeclarables(
+            MessagingProperties core,
+            RabbitMQProperties rabbit
+    ) {
 
         List<Declarable> declarables = new ArrayList<>();
 
@@ -37,7 +41,7 @@ public class RabbitMQInfrastructureAutoConfig {
         // ---------------------------------------------------------------------
         Map<String, TopicExchange> exchanges = new HashMap<>();
 
-        props.getTopics().forEach((logical, physical) -> {
+        core.getTopics().forEach((logical, physical) -> {
             TopicExchange exchange = new TopicExchange(physical, true, false);
             exchanges.put(physical, exchange);
             declarables.add(exchange);
@@ -48,7 +52,7 @@ public class RabbitMQInfrastructureAutoConfig {
         // ---------------------------------------------------------------------
         // 2. Create all configured queues
         // ---------------------------------------------------------------------
-        props.getRabbitmq().getQueues().forEach((logicalQueue, cfg) -> {
+        rabbit.getQueues().forEach((logicalQueue, cfg) -> {
 
             String queueName = cfg.getName();
             long ttl = cfg.getTtlOrDefault();
@@ -78,6 +82,7 @@ public class RabbitMQInfrastructureAutoConfig {
 
             Queue queue = queueBuilder.build();
             declarables.add(queue);
+
             log.info("Declared queue: {}", queueName);
 
             // -----------------------------------------------------------------
@@ -85,7 +90,7 @@ public class RabbitMQInfrastructureAutoConfig {
             // -----------------------------------------------------------------
             String routingKey = cfg.getRoutingKey();
 
-            String targetExchange = resolveExchangeNameForRoutingKey(props, routingKey)
+            String targetExchange = resolveExchangeNameForRoutingKey(core, routingKey)
                     .orElseThrow(() -> new IllegalStateException(
                             "No matching topic exchange found for routingKey=" + routingKey +
                                     ". Ensure messaging.topics.* maps correctly."
@@ -99,18 +104,18 @@ public class RabbitMQInfrastructureAutoConfig {
 
             declarables.add(binding);
 
-            log.info("Binding created: queue={} exchange={} routingKey={}", queueName, targetExchange, routingKey);
+            log.info("Binding created: queue={} exchange={} routingKey={}",
+                    queueName, targetExchange, routingKey);
         });
 
         // ---------------------------------------------------------------------
         // 4. Create auto queues per logical topic when no explicit queue exists
         // ---------------------------------------------------------------------
-        props.getTopics().forEach((logicalTopic, physicalExchange) -> {
+        core.getTopics().forEach((logicalTopic, physicalExchange) -> {
 
             String autoQueueName = logicalTopic + ".auto.queue";
 
-            boolean explicitQueueExists = props.getRabbitmq()
-                    .getQueues()
+            boolean explicitQueueExists = rabbit.getQueues()
                     .values()
                     .stream()
                     .anyMatch(cfg -> {
@@ -123,7 +128,8 @@ public class RabbitMQInfrastructureAutoConfig {
                 return;
             }
 
-            log.warn("No queue configured for logical topic '{}' → Creating auto queue {}", logicalTopic, autoQueueName);
+            log.warn("No queue configured for logical topic '{}' → Creating auto queue {}",
+                    logicalTopic, autoQueueName);
 
             // DLQ for auto queues
             String dlx = autoQueueName + ".dlx";
@@ -160,23 +166,15 @@ public class RabbitMQInfrastructureAutoConfig {
     // Exchange resolution logic
     // -------------------------------------------------------------------------
 
-    /**
-     * Resolve the RabbitMQ exchange based on routing key.
-     * Instead of brittle prefix matching, this method uses:
-     *
-     *     routingKey = "<logicalTopic>.<event>"
-     *
-     * which is the same convention publishers follow.
-     *
-     * @return Optional physical exchange name
-     */
-    private Optional<String> resolveExchangeNameForRoutingKey(MessagingProperties props, String routingKey) {
+    private Optional<String> resolveExchangeNameForRoutingKey(
+            MessagingProperties core,
+            String routingKey
+    ) {
         if (routingKey == null || !routingKey.contains(".")) {
             return Optional.empty();
         }
 
         String logicalTopic = routingKey.substring(0, routingKey.indexOf('.'));
-
-        return Optional.ofNullable(props.getTopics().get(logicalTopic));
+        return Optional.ofNullable(core.getTopics().get(logicalTopic));
     }
 }

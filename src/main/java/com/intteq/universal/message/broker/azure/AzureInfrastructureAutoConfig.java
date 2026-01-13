@@ -45,7 +45,11 @@ import java.time.Duration;
 @ConditionalOnProperty(name = "messaging.provider", havingValue = "azure")
 public class AzureInfrastructureAutoConfig {
 
-    private final MessagingProperties props;
+    /** Core messaging properties (topics, provider) */
+    private final MessagingProperties core;
+
+    /** Azure-specific properties (subscriptions) */
+    private final AzureProperties azure;
 
     /** Micrometer metrics – optional */
     @Nullable
@@ -57,10 +61,7 @@ public class AzureInfrastructureAutoConfig {
 
     /**
      * Fully-qualified namespace for Managed Identity mode.
-     *
-     * Required ONLY if connection string is empty.
-     * Example:
-     *   my-namespace.servicebus.windows.net
+     * Example: my-namespace.servicebus.windows.net
      */
     @Value("${azure.servicebus.namespace:}")
     private String namespace;
@@ -84,7 +85,7 @@ public class AzureInfrastructureAutoConfig {
 
         log.info("Azure Service Bus mode enabled. Validating configuration...");
 
-        if (connectionString == null || connectionString.isBlank()) {
+        if (resolveConnectionString() == null) {
             log.warn("Using Managed Identity: no Azure Service Bus connection string found.");
         } else {
             log.info("Using SAS authentication for Azure Service Bus.");
@@ -119,11 +120,7 @@ public class AzureInfrastructureAutoConfig {
     }
 
     /**
-     * Creates ServiceBusClientBuilder for producers and receivers.
-     *
-     * For 7.17.x:
-     * - This builder DOES support fullyQualifiedNamespace()
-     * - Admin builder does NOT
+     * ServiceBusClientBuilder for producers and receivers.
      */
     @Bean
     public ServiceBusClientBuilder serviceBusClientBuilder(
@@ -151,13 +148,7 @@ public class AzureInfrastructureAutoConfig {
     }
 
     /**
-     * Creates ServiceBusAdministrationClient for topic/subscription provisioning.
-     *
-     * IMPORTANT:
-     * - Admin builder in 7.17.x DOES NOT support fullyQualifiedNamespace()
-     * - It ONLY supports:
-     *     - connectionString()
-     *     - credential()
+     * ServiceBusAdministrationClient for topic/subscription provisioning.
      */
     @Bean
     public ServiceBusAdministrationClient adminClient(
@@ -214,7 +205,7 @@ public class AzureInfrastructureAutoConfig {
     // =====================================================
 
     private void createTopics(ServiceBusAdministrationClient admin) {
-        props.getTopics().forEach((logical, physical) -> {
+        core.getTopics().forEach((logical, physical) -> {
 
             log.info("Checking topic: logical='{}' physical='{}'", logical, physical);
 
@@ -228,9 +219,9 @@ public class AzureInfrastructureAutoConfig {
 
     private void createSubscriptions(ServiceBusAdministrationClient admin) {
 
-        props.getAzure().getSubscriptions().values().forEach(sub -> {
+        azure.getSubscriptions().values().forEach(sub -> {
 
-            String physicalTopic = props.getTopics().get(sub.getTopic());
+            String physicalTopic = core.getTopics().get(sub.getTopic());
 
             if (physicalTopic == null) {
                 log.warn("Skipping subscription '{}' — logical topic '{}' not mapped.",
