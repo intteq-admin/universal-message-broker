@@ -22,19 +22,7 @@ import java.util.*;
  *
  * <p>This class contains no consumer logic — only pure topology creation.
  */
-import com.intteq.universal.message.broker.MessagingProperties;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.amqp.core.*;
-import org.springframework.amqp.core.Queue;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
 
-import java.util.*;
-
-/**
- * Auto-configuration responsible for building RabbitMQ infrastructure.
- */
 @Slf4j
 @Configuration
 @ConditionalOnProperty(name = "messaging.provider", havingValue = "rabbitmq", matchIfMissing = true)
