@@ -36,7 +36,7 @@ public class MessagingProperties {
             flags = Pattern.Flag.CASE_INSENSITIVE,
             message = "messaging.provider must be one of: rabbitmq, azure"
     )
-    private String provider = "rabbitmq";
+    private String provider = "azure";
 
     /**
      * Logical topic → physical topic/exchange mapping.
