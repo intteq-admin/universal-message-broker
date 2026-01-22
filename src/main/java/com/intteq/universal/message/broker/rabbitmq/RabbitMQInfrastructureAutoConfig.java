@@ -25,7 +25,7 @@ import java.util.*;
 
 @Slf4j
 @Configuration
-@ConditionalOnProperty(name = "messaging.provider", havingValue = "rabbitmq", matchIfMissing = true)
+@ConditionalOnProperty(name = "messaging.provider", havingValue = "rabbitmq")
 public class RabbitMQInfrastructureAutoConfig {
 
     @Bean

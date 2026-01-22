@@ -2,4 +2,8 @@ com.intteq.universal.message.broker.MessagingAutoConfiguration
 com.intteq.universal.message.broker.rabbitmq.RabbitMQConfig
 com.intteq.universal.message.broker.rabbitmq.RabbitMQInfrastructureAutoConfig
 com.intteq.universal.message.broker.azure.AzureInfrastructureAutoConfig
-com.intteq.universal.message.broker.internal.ManualAckListenerProcessor
+com.intteq.universal.message.broker.internal.RabbitManualAckListenerProcessor
+com.intteq.universal.message.broker.internal.AzureManualAckListenerProcessor
+com.intteq.universal.message.broker.rabbitmq.OverrideRabbitHealthAutoConfiguration
+
+
