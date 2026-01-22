@@ -9,6 +9,7 @@ import com.intteq.universal.message.broker.MessageContext;
 import com.intteq.universal.message.broker.MessagingProperties;
 import com.intteq.universal.message.broker.annotation.EventHandler;
 import com.intteq.universal.message.broker.annotation.MessagingListener;
+import com.intteq.universal.message.broker.azure.AzureProperties;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.Nullable;
 import lombok.RequiredArgsConstructor;
@@ -19,6 +20,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.ApplicationContext;
 import org.springframework.core.annotation.AnnotationUtils;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import java.lang.reflect.Method;
@@ -54,11 +56,13 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 @Component
 @RequiredArgsConstructor
+@Order(100)
 @ConditionalOnProperty(prefix = "messaging", name = "provider", havingValue = "azure")
 @ConditionalOnClass(ServiceBusProcessorClient.class)
 public class AzureManualAckListenerProcessor
         implements SmartInitializingSingleton, DisposableBean {
 
+    private final AzureProperties azureProperties;
     private final MessagingProperties properties;
     private final ApplicationContext context;
     private final ObjectMapper objectMapper;
@@ -125,10 +129,12 @@ public class AzureManualAckListenerProcessor
 
             validateHandlerSignature(clazz, method);
 
-            String subscription = listener.channel() + "-sub";
+            String subscription = resolveSubscription(logicalTopic);
+
+            String processorKey = subscription + "#" + method.getName();
 
             processors.computeIfAbsent(
-                    subscription,
+                    processorKey,
                     s -> createAndStartProcessor(
                             topicName,
                             subscription,
@@ -314,5 +320,17 @@ public class AzureManualAckListenerProcessor
         });
 
         processors.clear();
+    }
+
+    private String resolveSubscription(String logicalTopic) {
+        return azureProperties.getSubscriptions()
+                .values()
+                .stream()
+                .filter(sub -> sub.getTopic().equals(logicalTopic))
+                .findFirst()
+                .map(AzureProperties.SubscriptionConfig::getName)
+                .orElseThrow(() -> new IllegalStateException(
+                        "No Azure subscription configured for logical topic: " + logicalTopic
+                ));
     }
 }
