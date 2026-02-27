@@ -148,19 +148,24 @@ public class AzureManualAckListenerProcessor
             String channel = resolve(listener.channel());
             String subscription = resolveSubscription(logicalTopic, channel);
 
-                String processorKey = subscription + "#"
-                        + method.getDeclaringClass().getName() + "#" + method.getName();
+                String processorKey = topicName + "#" + subscription;
 
-            processors.computeIfAbsent(
-                    processorKey,
-                    s -> createAndStartProcessor(
-                            topicName,
-                            subscription,
-                            bean,
-                            method,
-                            concurrency
-                    )
-            );
+                ServiceBusProcessorClient existing = processors.get(processorKey);
+                if (existing != null) {
+                    throw new IllegalStateException(
+                            "Multiple `@EventHandler` methods mapped to Azure subscription " + processorKey
+                    );
+                }
+                processors.put(
+                        processorKey,
+                        createAndStartProcessor(
+                                topicName,
+                                subscription,
+                                bean,
+                                method,
+                                concurrency
+                        )
+                );
         }
         );
     }
@@ -228,6 +233,7 @@ public class AzureManualAckListenerProcessor
             Method method,
             String subscription
     ) {
+        MessageContext mc = null;
 
         try {
             Object payload =
@@ -236,14 +242,15 @@ public class AzureManualAckListenerProcessor
                             method.getParameterTypes()[0]
                     );
 
-            MessageContext mc =
-                    MessageContext.forAzureProcessor(ctx);
+            mc = MessageContext.forAzureProcessor(ctx);
 
             long start = System.nanoTime();
             method.invoke(handler, payload, mc);
             long duration = System.nanoTime() - start;
 
-            ctx.complete();
+            if (!mc.isSettled()) {
+                mc.ack();
+            }
 
             recordSuccess(subscription, duration);
 
@@ -265,8 +272,17 @@ public class AzureManualAckListenerProcessor
                                             : "Handler execution failed"
                             );
 
-            ctx.deadLetter(opts);
+            if (mc == null || !mc.isSettled()) {
+                ctx.deadLetter(opts);
+            }
         }
+    }
+
+    private Throwable unwrapInvocationTargetException(Exception ex) {
+        if (ex instanceof InvocationTargetException && ex.getCause() != null) {
+            return ex.getCause();
+        }
+        return ex;
     }
 
     // =====================================================================
@@ -274,7 +290,9 @@ public class AzureManualAckListenerProcessor
     // =====================================================================
 
     private void validateHandlerSignature(Class<?> clazz, Method method) {
-        if (method.getParameterCount() != 2) {
+        Class<?>[] parameterTypes = method.getParameterTypes();
+        if (parameterTypes.length != 2
+                || !MessageContext.class.isAssignableFrom(parameterTypes[1])) {
             throw new IllegalStateException(
                     "Invalid @EventHandler signature: "
                             + clazz.getName() + "#" + method.getName()
