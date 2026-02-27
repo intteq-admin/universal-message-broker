@@ -53,8 +53,6 @@ public final class MessageContext {
     private final ServiceBusReceiverClient azureReceiver;
     private final AtomicBoolean settled = new AtomicBoolean(false);
 
-    // ------------ State Tracking ------------
-    private final AtomicBoolean settled = new AtomicBoolean(false);
 
     // =====================================================================
     //  FACTORY METHODS
@@ -117,14 +115,6 @@ public final class MessageContext {
      * Returns true once this context has completed any terminal settlement
      * operation (ack/nack/dead-letter).
      */
-    public boolean isSettled() {
-        return settled.get();
-    }
-
-    // =====================================================================
-    //  ACKNOWLEDGEMENT OPERATIONS
-    // =====================================================================
-
     public boolean isSettled() {
         return settled.get();
     }

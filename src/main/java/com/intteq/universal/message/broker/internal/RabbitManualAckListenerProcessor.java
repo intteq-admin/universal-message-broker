@@ -288,7 +288,9 @@ public class RabbitManualAckListenerProcessor
     // =====================================================================
 
     private void validateHandlerSignature(Class<?> clazz, Method method) {
-        if (method.getParameterCount() != 2) {
+        Class<?>[] parameterTypes = method.getParameterTypes();
+        if (parameterTypes.length != 2
+                || !MessageContext.class.isAssignableFrom(parameterTypes[1])) {
             throw new IllegalStateException(
                     "Invalid @EventHandler signature: "
                             + clazz.getName() + "#" + method.getName()
