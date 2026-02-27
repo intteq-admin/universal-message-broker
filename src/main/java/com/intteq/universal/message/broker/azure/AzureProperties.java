@@ -42,8 +42,10 @@ public class AzureProperties {
         @NotBlank(message = "azure.subscription.topic must not be blank")
         private String topic;
 
-        /** Subscription name (required). */
-        @NotBlank(message = "azure.subscription.name must not be blank")
+        /** Subscription name. If blank, defaults to channel-sub. */
         private String name;
+
+        /** Auto-delete on idle duration (e.g., PT1H). */
+        private String autoDeleteOnIdle;
     }
 }

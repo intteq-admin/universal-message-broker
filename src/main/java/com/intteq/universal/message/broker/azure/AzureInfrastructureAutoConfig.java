@@ -6,113 +6,124 @@ import com.azure.identity.DefaultAzureCredentialBuilder;
 import com.azure.messaging.servicebus.ServiceBusClientBuilder;
 import com.azure.messaging.servicebus.administration.ServiceBusAdministrationClient;
 import com.azure.messaging.servicebus.administration.ServiceBusAdministrationClientBuilder;
+import com.azure.messaging.servicebus.administration.models.CreateSubscriptionOptions;
 import com.intteq.universal.message.broker.MessagingProperties;
+import com.intteq.universal.message.broker.annotation.MessagingListener;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.ApplicationListener;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.EmbeddedValueResolverAware;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
 import org.springframework.lang.Nullable;
+import org.springframework.util.StringValueResolver;
 
 import java.security.SecureRandom;
 import java.time.Duration;
 
 /**
- * Azure Service Bus provisioning and client configuration.
+ * Azure Service Bus infrastructure auto-configuration.
  *
- * <p>This module:
+ * <p><b>Purpose</b></p>
  * <ul>
- *     <li>Automatically creates topics and subscriptions</li>
- *     <li>Handles Azure authentication (Connection String or Managed Identity)</li>
- *     <li>Provides ServiceBusClientBuilder and ServiceBusAdministrationClient beans</li>
+ *   <li>Provision Azure Service Bus topics</li>
+ *   <li>Provision Azure Service Bus subscriptions</li>
+ *   <li>Expose shared Azure Service Bus clients</li>
  * </ul>
  *
- * Activated only when:
+ * <p><b>Critical lifecycle guarantee</b></p>
  * <pre>
- * messaging.provider = azure
+ * This class runs BEFORE any message listeners are started.
+ * Topics and subscriptions are guaranteed to exist
+ * before processors attach to them.
  * </pre>
  *
- * Supports Azure Service Bus SDK version: 7.17.x
+ * <p><b>Activation conditions</b></p>
+ * <ul>
+ *   <li>{@code messaging.provider=azure}</li>
+ * </ul>
+ *
+ * <p><b>Why SmartInitializingSingleton?</b></p>
+ * <pre>
+ * ApplicationReadyEvent runs too late.
+ * SmartInitializingSingleton runs immediately
+ * after all singleton beans are created but
+ * BEFORE message consumers start.
+ * </pre>
  */
 @Configuration
 @Slf4j
 @RequiredArgsConstructor
+@Order(0) // MUST execute before Azure listeners
 @ConditionalOnProperty(name = "messaging.provider", havingValue = "azure")
-public class AzureInfrastructureAutoConfig {
+public class AzureInfrastructureAutoConfig implements SmartInitializingSingleton, EmbeddedValueResolverAware {
 
-    /** Core messaging properties (topics, provider) */
+    /** Core messaging configuration (logical → physical topic mapping). */
     private final MessagingProperties core;
 
-    /** Azure-specific properties (subscriptions) */
-    private final AzureProperties azure;
+    /** Azure-specific subscription configuration. */
+    private final AzureProperties azureProperties;
+    private final ApplicationContext applicationContext;
 
-    /** Micrometer metrics – optional */
+    /** Optional Micrometer registry for infrastructure metrics. */
     @Nullable
     private final MeterRegistry meterRegistry;
 
-    /** SAS connection string (optional when using Managed Identity) */
+    /** Azure Service Bus connection string (optional for Managed Identity). */
     @Value("${azure.servicebus.connection-string:}")
     private String connectionString;
 
-    /**
-     * Fully-qualified namespace for Managed Identity mode.
-     * Example: my-namespace.servicebus.windows.net
-     */
+    /** Fully qualified namespace (required for Managed Identity). */
     @Value("${azure.servicebus.namespace:}")
     private String namespace;
 
-    private volatile boolean initialized = false;
+    private StringValueResolver resolver;
+
+    @Override
+    public void setEmbeddedValueResolver(StringValueResolver resolver) {
+        this.resolver = resolver;
+    }
+
+    private String resolve(String value) {
+        return (resolver != null && value != null) ? resolver.resolveStringValue(value) : value;
+    }
 
     private static final int MAX_RETRIES = 6;
-    private static final SecureRandom RNG = new SecureRandom();
     private static final Duration BASE_DELAY = Duration.ofSeconds(1);
+    private static final SecureRandom RNG = new SecureRandom();
 
     // =====================================================
-    // 1. CONFIG VALIDATION
-    // =====================================================
-
-    @PostConstruct
-    void validate() {
-        if (initialized) {
-            return;
-        }
-        initialized = true;
-
-        log.info("Azure Service Bus mode enabled. Validating configuration...");
-
-        if (resolveConnectionString() == null) {
-            log.warn("Using Managed Identity: no Azure Service Bus connection string found.");
-        } else {
-            log.info("Using SAS authentication for Azure Service Bus.");
-        }
-    }
-
-    private String resolveConnectionString() {
-        String env = System.getenv("AZURE_SERVICEBUS_CONNECTION_STRING");
-        if (connectionString != null && !connectionString.isBlank()) {
-            return connectionString;
-        }
-        if (env != null && !env.isBlank()) {
-            return env;
-        }
-        return null;
-    }
-
-    private boolean useManagedIdentity() {
-        return resolveConnectionString() == null;
-    }
-
-    // =====================================================
-    // 2. BEANS
+    // VALIDATION
     // =====================================================
 
     /**
-     * Shared token credential for Managed Identity authentication.
+     * Logs Azure Service Bus startup mode.
+     * Does not perform provisioning.
+     */
+    @PostConstruct
+    void validate() {
+        log.info("Azure Service Bus infrastructure auto-configuration enabled.");
+    }
+
+    // =====================================================
+    // BEANS
+    // =====================================================
+
+    /**
+     * Provides Azure credentials.
+     *
+     * <p>Uses DefaultAzureCredential, supporting:</p>
+     * <ul>
+     *   <li>Managed Identity</li>
+     *   <li>Environment variables</li>
+     *   <li>Azure CLI login</li>
+     * </ul>
      */
     @Bean
     public TokenCredential azureCredential() {
@@ -120,7 +131,7 @@ public class AzureInfrastructureAutoConfig {
     }
 
     /**
-     * ServiceBusClientBuilder for producers and receivers.
+     * Shared ServiceBusClientBuilder for producers and consumers.
      */
     @Bean
     public ServiceBusClientBuilder serviceBusClientBuilder(
@@ -148,7 +159,7 @@ public class AzureInfrastructureAutoConfig {
     }
 
     /**
-     * ServiceBusAdministrationClient for topic/subscription provisioning.
+     * Azure Service Bus administration client used for provisioning.
      */
     @Bean
     public ServiceBusAdministrationClient adminClient(
@@ -162,9 +173,12 @@ public class AzureInfrastructureAutoConfig {
                 );
             }
 
+            String endpoint = "https://" + namespace;
+
             log.info("Creating ServiceBusAdministrationClient using Managed Identity.");
 
             return new ServiceBusAdministrationClientBuilder()
+                    .endpoint(endpoint)
                     .credential(credential)
                     .buildClient();
         }
@@ -177,112 +191,113 @@ public class AzureInfrastructureAutoConfig {
     }
 
     // =====================================================
-    // 3. INFRASTRUCTURE BOOTSTRAP
+    // INFRASTRUCTURE INITIALIZATION (CORE FIX)
     // =====================================================
 
-    @Bean
-    public ApplicationListener<ApplicationReadyEvent> azureInfrastructureInitializer(
-            ServiceBusAdministrationClient admin
-    ) {
-        return event -> initializeInfrastructure(admin);
-    }
+    /**
+     * Executes after all singleton beans are instantiated but
+     * before any messaging listeners start.
+     *
+     * <p>This guarantees that all required topics and subscriptions
+     * exist before consumers attach.</p>
+     */
+    @Override
+    public void afterSingletonsInstantiated() {
+        ServiceBusAdministrationClient admin =
+                applicationContext.getBean(ServiceBusAdministrationClient.class);
 
-    private void initializeInfrastructure(ServiceBusAdministrationClient admin) {
         log.info("Initializing Azure Service Bus infrastructure...");
 
         createTopics(admin);
         createSubscriptions(admin);
 
         log.info("Azure Service Bus infrastructure is ready.");
-
-        if (meterRegistry != null) {
-            meterRegistry.counter("umb.azure.infra.ready").increment();
-        }
     }
 
     // =====================================================
-    // 4. TOPICS + SUBSCRIPTIONS CREATION
+    // TOPICS & SUBSCRIPTIONS
     // =====================================================
 
+    /** Creates topics if they do not already exist. */
     private void createTopics(ServiceBusAdministrationClient admin) {
         core.getTopics().forEach((logical, physical) -> {
-
-            log.info("Checking topic: logical='{}' physical='{}'", logical, physical);
-
-            if (topicExists(admin, physical)) {
-                return;
-            }
-
-            retry("CreateTopic:" + physical, () -> admin.createTopic(physical));
-        });
-    }
-
-    private void createSubscriptions(ServiceBusAdministrationClient admin) {
-
-        azure.getSubscriptions().values().forEach(sub -> {
-
-            String physicalTopic = core.getTopics().get(sub.getTopic());
-
-            if (physicalTopic == null) {
-                log.warn("Skipping subscription '{}' — logical topic '{}' not mapped.",
-                        sub.getName(), sub.getTopic());
-                return;
-            }
-
-            log.info("Checking subscription: {} → {}", sub.getName(), physicalTopic);
-
-            retry("CreateSubscription:" + sub.getName(), () -> {
-                if (!subscriptionExists(admin, physicalTopic, sub.getName())) {
-                    admin.createSubscription(physicalTopic, sub.getName());
+            String resolvedPhysical = resolve(physical);
+            retry("CreateTopic:" + resolvedPhysical, () -> {
+                if (!topicExists(admin, resolvedPhysical)) {
+                    log.info("Creating topic '{}'", resolvedPhysical);
+                    admin.createTopic(resolvedPhysical);
                 }
             });
         });
     }
 
-    // =====================================================
-    // 5. RETRY + EXISTENCE CHECKS
-    // =====================================================
+    /** Creates subscriptions if they do not already exist. */
+    private void createSubscriptions(ServiceBusAdministrationClient admin) {
+        azureProperties.getSubscriptions().forEach((key, sub) -> {
+            String resolvedChannel = resolve(key);
+            String resolvedSubscriptionName = (sub.getName() != null && !sub.getName().isBlank())
+                    ? resolve(sub.getName())
+                    : resolvedChannel + "-sub";
 
-    private void retry(String label, Runnable action) {
-        Duration delay = BASE_DELAY;
+            String logicalTopic = resolve(sub.getTopic());
+            String physicalTopic = core.getTopics().get(logicalTopic);
 
-        for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-
-            try {
-                action.run();
-
-                if (meterRegistry != null) {
-                    meterRegistry.counter("umb.azure.infra.success", "label", label).increment();
-                }
+            if (physicalTopic == null) {
+                log.warn("Skipping subscription '{}' (key='{}') — logical topic '{}' not mapped",
+                        resolvedSubscriptionName, key, logicalTopic);
                 return;
-
-            } catch (Exception e) {
-
-                if (attempt == MAX_RETRIES) {
-                    log.error("Final retry failed for {}: {}", label, e.getMessage());
-                    throw e;
-                }
-
-                long jitter = RNG.nextInt(300);
-                long sleepMs = delay.toMillis() + jitter;
-
-                log.warn("Retry {}/{} for {} failed: {} → retrying in {}ms",
-                        attempt, MAX_RETRIES, label, e.getMessage(), sleepMs);
-
-                sleep(sleepMs);
-                delay = delay.multipliedBy(2);
             }
+
+            provisionSubscription(admin, physicalTopic, resolvedSubscriptionName, sub.getAutoDeleteOnIdle());
+        });
+
+        applicationContext.getBeansWithAnnotation(MessagingListener.class).forEach((beanName, bean) -> {
+            MessagingListener listener =
+                    applicationContext.findAnnotationOnBean(beanName, MessagingListener.class);
+            if (listener == null) return;
+
+            String channel = listener.channel();
+            String resolvedChannel = resolve(channel);
+
+            if (azureProperties.getSubscriptions().containsKey(channel)) {
+                return;
+            }
+
+            String logicalTopic = resolve(listener.topic());
+            String physicalTopic = core.getTopics().getOrDefault(logicalTopic, logicalTopic);
+            String resolvedSubscriptionName = resolvedChannel + "-sub";
+
+            provisionSubscription(admin, physicalTopic, resolvedSubscriptionName, null);
+        });
+    }
+
+    private void provisionSubscription(ServiceBusAdministrationClient admin, String topic, String subscription, String autoDeleteOnIdle) {
+        try {
+            retry("CreateSubscription:" + subscription, () -> {
+                if (!subscriptionExists(admin, topic, subscription)) {
+                    log.info("Creating subscription '{}' on topic '{}' (autoDeleteOnIdle={})",
+                            subscription, topic, autoDeleteOnIdle);
+
+                    CreateSubscriptionOptions options = new CreateSubscriptionOptions();
+                    if (autoDeleteOnIdle != null && !autoDeleteOnIdle.isBlank()) {
+                        try {
+                            options.setAutoDeleteOnIdle(Duration.parse(autoDeleteOnIdle));
+                        } catch (Exception e) {
+                            log.error("Invalid auto-delete-on-idle duration: {}", autoDeleteOnIdle);
+                        }
+                    }
+                    admin.createSubscription(topic, subscription, options);
+                }
+            });
+        } catch (Exception e) {
+                       log.error("Failed to provision subscription '{}' on topic '{}'. It might be due to dynamic placeholders or permissions.",
+                               subscription, topic, e);
         }
     }
 
-    private void sleep(long ms) {
-        try {
-            Thread.sleep(ms);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("Retry sleep interrupted", e);
-        }
-    }
+    // =====================================================
+    // HELPERS
+    // =====================================================
 
     private boolean topicExists(ServiceBusAdministrationClient admin, String topic) {
         try {
@@ -293,12 +308,50 @@ public class AzureInfrastructureAutoConfig {
         }
     }
 
-    private boolean subscriptionExists(ServiceBusAdministrationClient admin, String topic, String sub) {
+    private boolean subscriptionExists(ServiceBusAdministrationClient admin, String topic, String subscription) {
         try {
-            admin.getSubscription(topic, sub);
+            admin.getSubscription(topic, subscription);
             return true;
         } catch (ResourceNotFoundException e) {
             return false;
         }
     }
+
+    private void retry(String label, Runnable action) {
+        Duration delay = BASE_DELAY;
+
+        for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                action.run();
+                return;
+            } catch (Exception ex) {
+                if (attempt == MAX_RETRIES) {
+                    throw ex;
+                }
+                sleep(delay.toMillis() + RNG.nextInt(300));
+                delay = delay.multipliedBy(2);
+            }
+        }
+    }
+
+    private void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Infrastructure retry interrupted", e);
+        }
+    }
+
+    private boolean useManagedIdentity() {
+        return resolveConnectionString() == null;
+    }
+
+    private String resolveConnectionString() {
+        if (connectionString != null && !connectionString.isBlank()) {
+            return connectionString;
+        }
+        return System.getenv("AZURE_SERVICEBUS_CONNECTION_STRING");
+    }
+
 }

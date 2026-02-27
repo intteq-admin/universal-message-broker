@@ -10,6 +10,7 @@ import lombok.experimental.Accessors;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Unified message-processing context that abstracts acknowledgment /
@@ -50,6 +51,8 @@ public final class MessageContext {
     // ------------ Azure Receiver Model ------------
     private final ServiceBusReceivedMessage azureMessage;
     private final ServiceBusReceiverClient azureReceiver;
+    private final AtomicBoolean settled = new AtomicBoolean(false);
+
 
     // =====================================================================
     //  FACTORY METHODS
@@ -108,11 +111,20 @@ public final class MessageContext {
         return azureReceiver != null;
     }
 
-    // =====================================================================
-    //  ACKNOWLEDGEMENT OPERATIONS
-    // =====================================================================
+    /**
+     * Returns true once this context has completed any terminal settlement
+     * operation (ack/nack/dead-letter).
+     */
+    public boolean isSettled() {
+        return settled.get();
+    }
 
     public void ack() {
+        if (settled.getAndSet(true)) {
+            log.warn("Message already settled, ignoring ack()");
+            return;
+        }
+
         try {
             if (isRabbit()) {
                 rabbitChannel.basicAck(rabbitDeliveryTag, false);
@@ -124,11 +136,17 @@ public final class MessageContext {
                 throw new IllegalStateException("ack() called with no messaging context available");
             }
         } catch (Exception e) {
+            settled.set(false); // Revert state on failure
             throw new MessagingOperationException("Failed to ack message", e);
         }
     }
 
     public void nack() {
+        if (settled.getAndSet(true)) {
+            log.warn("Message already settled, ignoring nack()");
+            return;
+        }
+
         try {
             if (isRabbit()) {
                 rabbitChannel.basicNack(rabbitDeliveryTag, false, true);
@@ -140,6 +158,7 @@ public final class MessageContext {
                 throw new IllegalStateException("nack() called with no messaging context available");
             }
         } catch (Exception e) {
+            settled.set(false); // Revert state on failure
             throw new MessagingOperationException("Failed to nack message", e);
         }
     }
@@ -149,6 +168,11 @@ public final class MessageContext {
     }
 
     public void deadLetter(String reason, String description) {
+        if (settled.getAndSet(true)) {
+            log.warn("Message already settled, ignoring deadLetter()");
+            return;
+        }
+
         try {
             if (isRabbit()) {
                 rabbitChannel.basicNack(rabbitDeliveryTag, false, false);
@@ -168,6 +192,7 @@ public final class MessageContext {
                 throw new IllegalStateException("deadLetter() called with no messaging context available");
             }
         } catch (Exception e) {
+            settled.set(false); // Revert state on failure
             throw new MessagingOperationException("Failed to dead-letter message", e);
         }
     }
